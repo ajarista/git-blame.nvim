@@ -27,13 +27,22 @@ local function get_commit_path(sha, remote_url)
         return "/commits/" .. sha
     end
 
+    if domain and string.find(domain, "gerrit") then
+        return "/+/" .. sha
+    end
+
     return "/commit/" .. sha
 end
 
 ---@param remote_url string
 ---@return string
 local function get_repo_url(remote_url)
-    local domain, path = string.match(remote_url, ".*git%@(.*)%:(.*)%.git")
+    local domain, path = string.match(remote_url, "(https%:%/%/[^/]*gerrit[^/]*)%/(.*)")
+    if domain and path then
+        return domain .. "/plugins/gitiles/" .. path
+    end
+
+    domain, path = string.match(remote_url, ".*git%@(.*)%:(.*)%.git")
     if domain and path then
         return "https://" .. domain .. "/" .. path
     end
@@ -74,7 +83,7 @@ end
 ---@return string
 local function get_file_url(remote_url, branch, filepath, line1, line2)
     local repo_url = get_repo_url(remote_url)
-    local isSrcHut = repo_url:find('git.sr.ht')
+    local isSrcHut = repo_url:find("git.sr.ht")
 
     local file_path = "/blob/" .. branch .. "/" .. filepath
     if isSrcHut then
@@ -87,9 +96,9 @@ local function get_file_url(remote_url, branch, filepath, line1, line2)
         return repo_url .. file_path .. "#L" .. line1
     else
         if isSrcHut then
-            return repo_url .. file_path .. "#L" .. line1 .. '-' .. line2
+            return repo_url .. file_path .. "#L" .. line1 .. "-" .. line2
         end
-        return repo_url .. file_path .. "#L" .. line1 .. '-L' .. line2
+        return repo_url .. file_path .. "#L" .. line1 .. "-L" .. line2
     end
 end
 
