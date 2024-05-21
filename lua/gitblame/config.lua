@@ -1,5 +1,6 @@
 local M = {}
 
+---@type SetupOptions
 M.default_opts = {
     enabled = true,
     date_format = "%c",
@@ -9,11 +10,14 @@ M.default_opts = {
     set_extmark_options = {},
     display_virtual_text = true,
     ignored_filetypes = {},
-    delay = 0,
+    delay = 250,
     virtual_text_column = nil,
     use_blame_commit_file_urls = false,
+    schedule_event = "CursorMoved",
+    clear_event = "CursorMovedI",
 }
 
+---@param opts SetupOptions?
 M.setup = function(opts)
     opts = opts or {}
     opts = vim.tbl_deep_extend("force", M.default_opts, opts)

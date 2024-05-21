@@ -20,6 +20,7 @@ A git blame plugin for Neovim written in Lua
   - [Ignore by Filetype](#ignore-by-filetype)
   - [Visual delay for displaying the blame info](#visual-delay-for-displaying-the-blame-info)
   - [Start virtual text at column](#start-virtual-text-at-column)
+  - [Better Performance](#better-performance)
   - [Use blame commit file URLs](#use-blame-commit-file-urls)
 - [Commands](#commands)
   - [Open the commit URL in browser](#open-the-commit-url-in-browser)
@@ -203,7 +204,7 @@ The delay in milliseconds after which the blame info will be displayed.
 
 Note that this doesn't affect the performance of the plugin.
 
-Default: `0`
+Default: `250`
 
 ```vim
 let g:gitblame_delay = 1000 " 1 second
@@ -221,7 +222,23 @@ Default: `v:null`
 let g:gitblame_virtual_text_column = 80
 ```
 
-## Use blame commit file URLs
+### Better Performance
+
+If you are experiencing poor performance (e.g. in particularly large projects) you can use `CursorHold` and `CursorHoldI` instead of the default `CursorMoved` and `CursorMovedI` autocommands to limit the frequency of events being run.
+
+`g:gitblame_schedule_event` is used for scheduling events. See [CursorMoved](https://neovim.io/doc/user/autocmd.html#CursorMoved) and [CursorHold](https://neovim.io/doc/user/autocmd.html#CursorHold).
+
+Default: `CursorMoved`
+
+options: `CursorMoved`|`CursorHold` 
+
+`g:gitblame_clear_event` is used for clearing virtual text. See [CursorMovedI](https://neovim.io/doc/user/autocmd.html#CursorMovedI) and [CursorHoldI](https://neovim.io/doc/user/autocmd.html#CursorHoldI).
+
+Default: `CursorMovedI`
+
+options: `CursorMovedI`|`CursorHoldI`
+
+### Use blame commit file URLs
 
 By default the commands `GitBlameOpenFileURL` and `GitBlameCopyFileURL` open the current file at latest branch commit. If you would like to open these files at the latest blame commit (in other words, the commit marked by the blame), set this to true. For ranges, the blame selected will be the most recent blame from the range.
 

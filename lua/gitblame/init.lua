@@ -4,15 +4,21 @@ local start_job = utils.start_job
 local timeago = require("lua-timeago")
 local M = {}
 
+---@alias timestamp integer unix epoch representation of time
+
 ---@type integer
 local NAMESPACE_ID = vim.api.nvim_create_namespace("git-blame-virtual-text")
 
----@type table<string, string>
-local last_position = {}
+---@type PositionInfo
+local last_position = {
+    filepath = nil,
+    line = -1,
+    is_on_same_line = false,
+}
 
 ---@class GitInfo
 ---@field blames table<string, BlameInfo>
----@field git_repo_path string
+---@field git_repo_path string?
 
 ---@type table<string, GitInfo>
 local files_data = {}
@@ -26,15 +32,12 @@ local current_author
 ---@type boolean
 local need_update_after_horizontal_move = false
 
---- This shouldn't be used directly. Use `get_date_format` instead.
+---This shouldn't be used directly. Use `get_date_format` instead.
 ---@type boolean
 local date_format_has_relative_time
 
 ---@type string
 local current_blame_text
-
----@type table timer luv timer object
-local delay_timer
 
 ---@return string
 local function get_date_format()
@@ -59,9 +62,6 @@ end
 ---@param filepath string
 ---@param lines string[]
 local function process_blame_output(blames, filepath, lines)
-    if not files_data[filepath] then
-        files_data[filepath] = {}
-    end
     ---@type BlameInfo
     local info
     for _, line in ipairs(lines) do
@@ -99,13 +99,13 @@ local function process_blame_output(blames, filepath, lines)
                 info.author = author
             elseif line:match("^author%-time ") then
                 local text = line:gsub("^author%-time ", "")
-                info.date = text
+                info.date = tonumber(text) or os.time()
             elseif line:match("^committer ") then
                 local committer = line:gsub("^committer ", "")
                 info.committer = committer
             elseif line:match("^committer%-time ") then
                 local text = line:gsub("^committer%-time ", "")
-                info.committer_date = text
+                info.committer_date = tonumber(text) or os.time()
             elseif line:match("^summary ") then
                 local text = line:gsub("^summary ", "")
                 info.summary = text
@@ -114,7 +114,7 @@ local function process_blame_output(blames, filepath, lines)
     end
 
     if not files_data[filepath] then
-        files_data[filepath] = {}
+        files_data[filepath] = { blames = {} }
     end
     files_data[filepath].blames = blames
 end
@@ -170,7 +170,7 @@ local function load_blames(callback)
     end)
 end
 
---- Checks if the date format contains a relative time placeholder.
+---Checks if the date format contains a relative time placeholder.
 ---@return boolean
 local function check_uses_relative_date()
     if date_format_has_relative_time then
@@ -181,22 +181,24 @@ local function check_uses_relative_date()
     return false
 end
 
----@param date osdate
+---@param date timestamp
 ---@return string
 local function format_date(date)
     local format = get_date_format()
     if check_uses_relative_date() then
         format = format:gsub("%%r", timeago.format(date))
     end
-
-    return os.date(format, date)
+    if format == "*t" then
+        return "*t"
+    end
+    return os.date(format, date) --[[@as string]]
 end
 
 ---@param filepath string
 ---@param linenumber number
----@return BlameInfo|nil
+---@return BlameInfo?
 local function get_line_blame_info(filepath, linenumber)
-    ---@type BlameInfo|nil
+    ---@type BlameInfo?
     local info = nil
     for _, v in ipairs(files_data[filepath].blames) do
         if linenumber >= v.startline and linenumber <= v.endline then
@@ -216,9 +218,8 @@ local function get_range_blame_info(filepath, line1, line2)
     local range_info = {}
 
     for _, blame in ipairs(files_data[filepath].blames) do
-        local blame_is_out_of_range =
-            (blame.startline < line1 and blame.endline < line1) or
-            (blame.startline > line2 and blame.endline > line2)
+        local blame_is_out_of_range = (blame.startline < line1 and blame.endline < line1)
+            or (blame.startline > line2 and blame.endline > line2)
 
         if not blame_is_out_of_range then
             range_info[#range_info + 1] = blame
@@ -229,10 +230,10 @@ end
 
 ---Return blame information for the given line. If given a visual selection,
 ---return blame information for the most recently updated line.
----@param filepath string|nil
+---@param filepath string?
 ---@param line1 number
 ---@param line2 number?
----@return BlameInfo|nil
+---@return BlameInfo?
 local function get_blame_info(filepath, line1, line2)
     if not filepath or not files_data[filepath] then
         return nil
@@ -275,15 +276,15 @@ end
 ---@class BlameInfo
 ---@field author string
 ---@field committer string
----@field date osdate
----@field committer_date osdate
+---@field date timestamp
+---@field committer_date timestamp
 ---@field summary string
 ---@field sha string
 ---@field startline number
 ---@field endline number
 
----@param info BlameInfo|nil
----@param callback fun(blame_text: string|nil)
+---@param info BlameInfo?
+---@param callback fun(blame_text: string?)
 local function get_blame_text(filepath, info, callback)
     local is_info_commit = info
         and info.author
@@ -293,7 +294,7 @@ local function get_blame_text(filepath, info, callback)
         and info.author ~= "External file (--contents)"
         and info.author ~= "Not Committed Yet"
 
-    if is_info_commit then
+    if info and is_info_commit then
         info.author = info.author == current_author and "You" or info.author
         info.committer = info.committer == current_author and "You" or info.committer
 
@@ -329,7 +330,7 @@ local function get_blame_text(filepath, info, callback)
 end
 
 ---Updates `current_blame_text` and sets the virtual text if it should.
----@param blame_text string|nil
+---@param blame_text string?
 local function update_blame_text(blame_text)
     clear_virtual_text()
 
@@ -363,7 +364,7 @@ local function update_blame_text(blame_text)
 end
 
 ---@class PositionInfo
----@field filepath string|nil
+---@field filepath string?
 ---@field line integer
 ---@field is_on_same_line boolean
 
@@ -419,18 +420,11 @@ local function schedule_show_info_display()
         end
     end
 
-    ---@type integer
-    local delay = vim.g.gitblame_delay
-
-    if not delay or delay == 0 or position_info.is_on_same_line then
+    if position_info.is_on_same_line then
         show_blame_info()
     else
-        if delay_timer and vim.loop.is_active(delay_timer) then
-            delay_timer:stop()
-            delay_timer:close()
-        end
         clear_virtual_text()
-        delay_timer = vim.defer_fn(show_blame_info, delay)
+        show_blame_info()
     end
 
     last_position.filepath = position_info.filepath
@@ -506,6 +500,13 @@ local function get_latest_sha(callback)
     })
 end
 
+---@param sha string?
+---@return boolean
+local function is_valid_sha(sha)
+    local empty_sha = "0000000000000000000000000000000000000000"
+    return sha ~= nil and sha ~= "" and sha ~= empty_sha
+end
+
 ---Returns SHA for the current line or SHA
 ---for the latest commit in visual selection
 ---@param callback fun(sha: string)
@@ -528,9 +529,7 @@ end
 
 M.open_commit_url = function()
     M.get_sha(function(sha)
-        local empty_sha = "0000000000000000000000000000000000000000"
-
-        if sha and sha ~= empty_sha then
+        if is_valid_sha(sha) then
             git.open_commit_in_browser(sha)
         else
             utils.log("Unable to open commit URL as SHA is empty")
@@ -567,12 +566,12 @@ M.get_current_blame_text = function()
 end
 
 M.is_blame_text_available = function()
-    return current_blame_text ~= nil
+    return current_blame_text and current_blame_text ~= ""
 end
 
 M.copy_sha_to_clipboard = function()
     M.get_sha(function(sha)
-        if sha then
+        if is_valid_sha(sha) then
             utils.copy_to_clipboard(sha)
         else
             utils.log("Unable to copy SHA")
@@ -603,7 +602,7 @@ end
 
 M.copy_commit_url_to_clipboard = function()
     M.get_sha(function(sha)
-        if sha then
+        if is_valid_sha(sha) then
             git.get_remote_url(function(remote_url)
                 local commit_url = git.get_commit_url(sha, remote_url)
                 utils.copy_to_clipboard(commit_url)
@@ -622,12 +621,65 @@ local function clear_all_extmarks()
     end
 end
 
+-- this function is uesed to verify the config info for debounce
+--- @return boolean
+local verify_debounce_info = function()
+    if vim.g.gitblame_schedule_event ~= "CursorMoved" and vim.g.gitblame_schedule_event ~= "CursorHold" then
+        vim.notify(
+            string.format("event is error: %s, it just can be CursorMoved or CursorHold", vim.g.gitblame_schedule_event),
+            vim.log.levels.ERROR,
+            {}
+        )
+        return false
+    end
+    if vim.g.gitblame_clear_event ~= "CursorMovedI" and vim.g.gitblame_clear_event ~= "CursorHoldI" then
+        vim.notify(
+            string.format("event is error: %s, it just can be CursorMoved or CursorHold", vim.g.gitblame_clear_event),
+            vim.log.levels.ERROR,
+            {}
+        )
+        return false
+    end
+
+    if type(vim.g.gitblame_delay) ~= "number" or vim.g.gitblame_delay < 0 then
+        vim.notify(
+            string.format("delay is error: %s, it just can be number", vim.g.gitblame_delay),
+            vim.log.levels.ERROR,
+            {}
+        )
+        return false
+    end
+
+    return true
+end
+
 local function set_autocmds()
     local autocmd = vim.api.nvim_create_autocmd
     local group = vim.api.nvim_create_augroup("gitblame", { clear = true })
 
-    autocmd("CursorMoved", { callback = schedule_show_info_display, group = group })
-    autocmd("CursorMovedI", { callback = clear_virtual_text, group = group })
+    if not verify_debounce_info() then
+        return
+    end
+
+    --- @type "CursorMoved" | "CursorHold"
+    local event_schedule = vim.g.gitblame_schedule_event
+    --- @type "CursorMovedI" | "CursorHoldI"
+    local event_clear = vim.g.gitblame_clear_event
+
+    --- @type function
+    local func_schedule = schedule_show_info_display
+    if event_schedule == "CursorMoved" then
+        func_schedule = utils.debounce(schedule_show_info_display, math.floor(vim.g.gitblame_delay))
+    end
+
+    --- @type function
+    local func_clear = clear_virtual_text
+    if event_clear == "CursorMovedI" then
+        func_clear = utils.debounce(clear_virtual_text, math.floor(vim.g.gitblame_delay))
+    end
+
+    autocmd(event_schedule, { callback = func_schedule, group = group })
+    autocmd(event_clear, { callback = func_clear, group = group })
     autocmd("InsertEnter", { callback = clear_virtual_text, group = group })
     autocmd("TextChanged", { callback = handle_text_changed, group = group })
     autocmd("InsertLeave", { callback = handle_insert_leave, group = group })
@@ -644,8 +696,12 @@ M.disable = function(force)
     pcall(vim.api.nvim_del_augroup_by_name, "gitblame")
     clear_all_extmarks()
     clear_files_data()
-    last_position = {}
-    current_blame_text = nil
+    last_position = {
+        filepath = nil,
+        line = -1,
+        is_on_same_line = false,
+    }
+    current_blame_text = ""
 end
 
 M.enable = function()
@@ -680,19 +736,19 @@ local create_cmds = function()
 end
 
 ---@class SetupOptions
----@field enabled boolean
----@field message_template string
----@field date_format string
----@field message_when_not_committed string
----@field highlight_group string
----@field gitblame_set_extmark_options object @See :h nvim_buf_set_extmark() to check what you can pass here
----@field display_virtual_text boolean
----@field ignored_filetypes string[]
----@field delay number @Visual delay for displaying virtual text
+---@field enabled? boolean
+---@field message_template string?
+---@field date_format string?
+---@field message_when_not_committed string?
+---@field highlight_group string?
+---@field gitblame_set_extmark_options table? @see vim.api.nvim_buf_set_extmark() to check what you can pass here
+---@field display_virtual_text boolean?
+---@field ignored_filetypes string[]?
+---@field delay number? Visual delay for displaying virtual text
 ---@field use_blame_commit_file_urls boolean? Use the latest blame commit instead of the latest branch commit for file urls.
----@field virtual_text_column nil|number @The column on which to start displaying virtual text
+---@field virtual_text_column number? The column on which to start displaying virtual text
 
----@param opts SetupOptions
+---@param opts SetupOptions?
 M.setup = function(opts)
     require("gitblame.config").setup(opts)
 
